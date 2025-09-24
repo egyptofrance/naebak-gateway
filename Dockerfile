@@ -1,61 +1,39 @@
-# Multi-stage build for security and efficiency
-FROM python:3.11-slim as builder
+# Dockerfile for Flask Services (Gateway, Visitor Counter, Statistics, News, Banner, Theme, Notifications)
+FROM python:3.11-slim
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV FLASK_APP=app.py
+ENV FLASK_ENV=production
+
+# Set work directory
+WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        && rm -rf /var/lib/apt/lists/*
 
-# Create virtual environment
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Copy requirements and install Python dependencies
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Production stage
-FROM python:3.11-slim as production
+# Copy project
+COPY . .
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libpq5 \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
-# Copy virtual environment from builder stage
-COPY --from=builder /opt/venv /opt/venv
-
-# Set working directory
-WORKDIR /app
-
-# Copy application code
-COPY --chown=appuser:appuser . .
-
-# Switch to non-root user
+# Create non-root user
+RUN adduser --disabled-password --gecos '' appuser \
+    && chown -R appuser:appuser /app
 USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python manage.py check --deploy || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
-# Expose port
+# Expose port (will be overridden by Cloud Run)
 EXPOSE 8000
 
 # Run the application
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120", "config.wsgi:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "60", "app:app"]
