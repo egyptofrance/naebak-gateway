@@ -1,0 +1,288 @@
+# قواعد حوكمة الذكاء الاصطناعي لتطبيق "نائبك"
+# AI Governance Rules for Naibak Application
+
+version: "1.0"
+last_updated: "2024-01-01"
+enforced: true
+
+# القواعد الأساسية للكود
+code_rules:
+  # منع الكود بدون اختبارات
+  no_code_without_tests:
+    enabled: true
+    severity: "critical"
+    description: "كل دالة أو كلاس عام يجب أن يحتوي على اختبارات"
+    enforcement: "block"
+    exceptions: []
+    
+  # منع الاختبارات الوهمية
+  no_fake_tests:
+    enabled: true
+    severity: "critical"
+    description: "منع الاختبارات الوهمية مثل assert True أو pass"
+    enforcement: "block"
+    forbidden_patterns:
+      - "assert True"
+      - "assert 1 == 1"
+      - "assert False"
+      - "pass  # TODO"
+      - "# placeholder test"
+    
+  # تغطية الاختبارات الإجبارية
+  minimum_coverage:
+    enabled: true
+    severity: "critical"
+    threshold: 90
+    enforcement: "block"
+    description: "تغطية الاختبارات يجب أن تكون 90% على الأقل"
+    
+  # جودة الكود
+  code_quality:
+    enabled: true
+    severity: "high"
+    max_complexity: 10
+    max_function_length: 50
+    max_class_length: 200
+    enforcement: "warn"
+
+# القواعد الأمنية
+security_rules:
+  # منع الأنماط الخطيرة
+  forbidden_patterns:
+    enabled: true
+    severity: "critical"
+    enforcement: "block"
+    patterns:
+      - pattern: "eval\\s*\\("
+        description: "استخدام eval() محظور لأسباب أمنية"
+      - pattern: "exec\\s*\\("
+        description: "استخدام exec() محظور لأسباب أمنية"
+      - pattern: "password\\s*=\\s*['\"][^'\"]+['\"]"
+        description: "كلمة مرور مكشوفة في الكود"
+      - pattern: "secret\\s*=\\s*['\"][^'\"]+['\"]"
+        description: "مفتاح سري مكشوف في الكود"
+      - pattern: "api_key\\s*=\\s*['\"][^'\"]+['\"]"
+        description: "مفتاح API مكشوف في الكود"
+        
+  # فحص التبعيات
+  dependency_security:
+    enabled: true
+    severity: "high"
+    enforcement: "block"
+    scan_tools: ["safety", "bandit", "semgrep"]
+    
+  # فحص الحاويات
+  container_security:
+    enabled: true
+    severity: "high"
+    enforcement: "block"
+    scan_tools: ["trivy"]
+
+# قواعد الاختبارات
+testing_rules:
+  # أنواع الاختبارات المطلوبة
+  required_test_types:
+    enabled: true
+    severity: "high"
+    enforcement: "warn"
+    types:
+      - "unit"
+      - "integration"
+      - "security"
+      
+  # جودة الاختبارات
+  test_quality:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    min_assertions_per_test: 1
+    max_mocks_per_test: 3
+    require_docstrings: true
+    
+  # تنظيم الاختبارات
+  test_organization:
+    enabled: true
+    severity: "low"
+    enforcement: "warn"
+    naming_convention: "test_*"
+    file_naming: "test_*.py"
+
+# قواعد التوثيق
+documentation_rules:
+  # توثيق الدوال
+  function_documentation:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    require_docstrings: true
+    style: "google"
+    
+  # توثيق الكلاسات
+  class_documentation:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    require_docstrings: true
+    style: "google"
+    
+  # توثيق الـ API
+  api_documentation:
+    enabled: true
+    severity: "high"
+    enforcement: "warn"
+    require_openapi: true
+    require_examples: true
+
+# قواعد الأداء
+performance_rules:
+  # تعقد الخوارزميات
+  algorithmic_complexity:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    max_time_complexity: "O(n^2)"
+    max_space_complexity: "O(n)"
+    
+  # استخدام الذاكرة
+  memory_usage:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    max_memory_per_function: "100MB"
+    
+  # استعلامات قاعدة البيانات
+  database_queries:
+    enabled: true
+    severity: "high"
+    enforcement: "warn"
+    max_queries_per_request: 10
+    require_indexing: true
+
+# قواعد خاصة بـ Django
+django_rules:
+  # نماذج البيانات
+  models:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    require_meta_class: true
+    require_str_method: true
+    max_fields: 20
+    
+  # العروض (Views)
+  views:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    max_lines: 100
+    require_permission_classes: true
+    require_serializer_class: true
+    
+  # الهجرات (Migrations)
+  migrations:
+    enabled: true
+    severity: "high"
+    enforcement: "block"
+    require_reversible: true
+    no_data_loss: true
+
+# قواعد خاصة بالذكاء الاصطناعي
+ai_specific_rules:
+  # استخدام نماذج الذكاء الاصطناعي
+  ai_model_usage:
+    enabled: true
+    severity: "high"
+    enforcement: "block"
+    max_tokens_per_request: 1000
+    max_requests_per_minute: 10
+    require_rate_limiting: true
+    
+  # جودة المحتوى المُولد
+  generated_content_quality:
+    enabled: true
+    severity: "high"
+    enforcement: "block"
+    require_human_review: true
+    content_filters:
+      - "bias_detection"
+      - "profanity_filter"
+      - "fact_checking"
+      
+  # تتبع الاستخدام
+  usage_tracking:
+    enabled: true
+    severity: "medium"
+    enforcement: "warn"
+    log_all_requests: true
+    track_performance: true
+    monitor_costs: true
+
+# إعدادات التنفيذ
+enforcement_settings:
+  # مستويات الشدة
+  severity_levels:
+    critical: "block"  # منع التنفيذ
+    high: "block"      # منع التنفيذ
+    medium: "warn"     # تحذير فقط
+    low: "info"        # معلومات فقط
+    
+  # استثناءات
+  exceptions:
+    files:
+      - "migrations/*.py"
+      - "tests/fixtures/*.py"
+      - "manage.py"
+    patterns:
+      - "__init__.py"
+      - "settings/*.py"
+      
+  # تقارير
+  reporting:
+    enabled: true
+    format: "json"
+    include_suggestions: true
+    include_metrics: true
+
+# إعدادات التكامل
+integration_settings:
+  # Git hooks
+  git_hooks:
+    pre_commit: true
+    pre_push: true
+    commit_msg: false
+    
+  # CI/CD
+  ci_cd:
+    github_actions: true
+    gitlab_ci: false
+    jenkins: false
+    
+  # IDEs
+  ide_integration:
+    vscode: true
+    pycharm: true
+    vim: false
+
+# إعدادات المراقبة
+monitoring_settings:
+  # Metrics
+  metrics:
+    enabled: true
+    export_format: "prometheus"
+    include_performance: true
+    include_usage: true
+    
+  # Alerts
+  alerts:
+    enabled: true
+    channels: ["slack", "email"]
+    thresholds:
+      violation_rate: 0.1
+      coverage_drop: 0.05
+      
+  # Dashboards
+  dashboards:
+    enabled: true
+    platform: "grafana"
+    auto_refresh: true
+    retention_days: 30

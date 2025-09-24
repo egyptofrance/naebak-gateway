@@ -1,0 +1,358 @@
+name: Auto Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main        # Production deployment
+      - develop     # Staging deployment
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: us-central1
+  SERVICE_NAME: naibak-gateway
+  REGISTRY: gcr.io
+
+jobs:
+  # Determine deployment environment
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      service-name: ${{ steps.env.outputs.service-name }}
+      should-deploy: ${{ steps.env.outputs.should-deploy }}
+    steps:
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            ENVIRONMENT="production"
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            ENVIRONMENT="staging"
+          else
+            ENVIRONMENT="none"
+          fi
+          
+          echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+          
+          if [ "${ENVIRONMENT}" = "production" ]; then
+            echo "service-name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
+          else
+            echo "service-name=${SERVICE_NAME}-${ENVIRONMENT}" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ "${ENVIRONMENT}" != "none" ]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "🎯 Deployment Environment: ${ENVIRONMENT}"
+          echo "📦 Service Name: $([ "${ENVIRONMENT}" = "production" ] && echo "${SERVICE_NAME}" || echo "${SERVICE_NAME}-${ENVIRONMENT}")"
+
+  # Run comprehensive tests (reuse from ci.yml)
+  test:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # Build and deploy
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [setup, test]
+    if: needs.setup.outputs.should-deploy == 'true' && needs.test.result == 'success'
+    environment: ${{ needs.setup.outputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Authenticate with Google Cloud
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for GCR
+        run: |
+          gcloud auth configure-docker
+
+      # AI Governance Pre-deployment Check
+      - name: AI Governance Pre-deployment Check
+        run: |
+          echo "🤖 Running AI Governance pre-deployment checks..."
+          python scripts/ai_governance_hook.py app/
+          python scripts/coverage_check.py
+          python scripts/contract_validation.py
+          echo "✅ AI Governance checks passed"
+
+      # Build Docker image
+      - name: Build Docker image
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.GCP_PROJECT_ID }}/${{ needs.setup.outputs.service-name }}:${{ github.sha }}"
+          LATEST_TAG="${{ env.REGISTRY }}/${{ env.GCP_PROJECT_ID }}/${{ needs.setup.outputs.service-name }}:latest"
+          
+          echo "🐳 Building Docker image..."
+          docker build -t $IMAGE_TAG -t $LATEST_TAG .
+          
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+          echo "LATEST_TAG=${LATEST_TAG}" >> $GITHUB_ENV
+
+      # Security scan of Docker image
+      - name: Security scan Docker image
+        run: |
+          echo "🔒 Running security scan on Docker image..."
+          # Install Trivy
+          sudo apt-get update
+          sudo apt-get install wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install trivy
+          
+          # Scan image
+          trivy image --exit-code 1 --severity HIGH,CRITICAL ${{ env.IMAGE_TAG }}
+
+      # Push image to GCR
+      - name: Push image to Google Container Registry
+        run: |
+          echo "📤 Pushing image to GCR..."
+          docker push ${{ env.IMAGE_TAG }}
+          docker push ${{ env.LATEST_TAG }}
+
+      # Deploy to Cloud Run
+      - name: Deploy to Cloud Run
+        run: |
+          echo "🚀 Deploying to Google Cloud Run..."
+          
+          # Set environment-specific configurations
+          if [ "${{ needs.setup.outputs.environment }}" = "production" ]; then
+            MEMORY="2Gi"
+            CPU="2"
+            MAX_INSTANCES="100"
+            MIN_INSTANCES="1"
+            CONCURRENCY="80"
+            TIMEOUT="300"
+          else
+            MEMORY="1Gi"
+            CPU="1"
+            MAX_INSTANCES="10"
+            MIN_INSTANCES="0"
+            CONCURRENCY="40"
+            TIMEOUT="300"
+          fi
+          
+          # Deploy with comprehensive configuration
+          gcloud run deploy ${{ needs.setup.outputs.service-name }} \
+            --image ${{ env.IMAGE_TAG }} \
+            --platform managed \
+            --region ${{ env.GCP_REGION }} \
+            --allow-unauthenticated \
+            --memory $MEMORY \
+            --cpu $CPU \
+            --max-instances $MAX_INSTANCES \
+            --min-instances $MIN_INSTANCES \
+            --concurrency $CONCURRENCY \
+            --timeout $TIMEOUT \
+            --set-env-vars="ENVIRONMENT=${{ needs.setup.outputs.environment }}" \
+            --set-env-vars="DEBUG=False" \
+            --set-env-vars="AI_GOVERNANCE_ENABLED=True" \
+            --set-env-vars="MINIMUM_TEST_COVERAGE=90" \
+            --set-env-vars="MAX_AI_REQUESTS_PER_MINUTE=10" \
+            --set-env-vars="AI_RESPONSE_MAX_TOKENS=1000" \
+            --set-secrets="SECRET_KEY=django-secret-key:latest" \
+            --set-secrets="DATABASE_URL=database-url-${{ needs.setup.outputs.environment }}:latest" \
+            --set-secrets="REDIS_URL=redis-url-${{ needs.setup.outputs.environment }}:latest" \
+            --set-secrets="OPENAI_API_KEY=openai-api-key:latest" \
+            --set-secrets="JWT_SECRET_KEY=jwt-secret-key:latest" \
+            --no-traffic
+
+      # Health check
+      - name: Health check
+        run: |
+          echo "🏥 Performing health check..."
+          
+          # Get service URL
+          SERVICE_URL=$(gcloud run services describe ${{ needs.setup.outputs.service-name }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          
+          echo "Service URL: $SERVICE_URL"
+          
+          # Wait for service to be ready
+          sleep 30
+          
+          # Health check with retry
+          for i in {1..5}; do
+            if curl -f "${SERVICE_URL}/health/" > /dev/null 2>&1; then
+              echo "✅ Health check passed"
+              echo "SERVICE_URL=${SERVICE_URL}" >> $GITHUB_ENV
+              break
+            else
+              echo "⏳ Health check attempt $i failed, retrying..."
+              if [ $i -eq 5 ]; then
+                echo "❌ Health check failed after 5 attempts"
+                exit 1
+              fi
+              sleep 30
+            fi
+          done
+
+      # Gradual traffic migration for production
+      - name: Traffic migration
+        run: |
+          if [ "${{ needs.setup.outputs.environment }}" = "production" ]; then
+            echo "🚦 Starting gradual traffic migration for production..."
+            
+            # 10% traffic
+            echo "Migrating 10% traffic to new version..."
+            gcloud run services update-traffic ${{ needs.setup.outputs.service-name }} \
+              --to-revisions=LATEST=10 \
+              --region=${{ env.GCP_REGION }}
+            
+            sleep 120
+            
+            # Health check at 10%
+            if curl -f "${{ env.SERVICE_URL }}/health/" > /dev/null 2>&1; then
+              # 50% traffic
+              echo "Migrating 50% traffic to new version..."
+              gcloud run services update-traffic ${{ needs.setup.outputs.service-name }} \
+                --to-revisions=LATEST=50 \
+                --region=${{ env.GCP_REGION }}
+              
+              sleep 120
+              
+              # Health check at 50%
+              if curl -f "${{ env.SERVICE_URL }}/health/" > /dev/null 2>&1; then
+                # 100% traffic
+                echo "Migrating 100% traffic to new version..."
+                gcloud run services update-traffic ${{ needs.setup.outputs.service-name }} \
+                  --to-revisions=LATEST=100 \
+                  --region=${{ env.GCP_REGION }}
+                
+                echo "✅ Traffic migration completed successfully"
+              else
+                echo "❌ Health check failed at 50% traffic, rolling back"
+                gcloud run services update-traffic ${{ needs.setup.outputs.service-name }} \
+                  --to-revisions=LATEST=0 \
+                  --region=${{ env.GCP_REGION }}
+                exit 1
+              fi
+            else
+              echo "❌ Health check failed at 10% traffic, rolling back"
+              gcloud run services update-traffic ${{ needs.setup.outputs.service-name }} \
+                --to-revisions=LATEST=0 \
+                --region=${{ env.GCP_REGION }}
+              exit 1
+            fi
+          else
+            # For staging, migrate all traffic immediately
+            echo "🚦 Migrating all traffic to new version (staging)..."
+            gcloud run services update-traffic ${{ needs.setup.outputs.service-name }} \
+              --to-revisions=LATEST=100 \
+              --region=${{ env.GCP_REGION }}
+          fi
+
+      # Cleanup old revisions
+      - name: Cleanup old revisions
+        run: |
+          echo "🧹 Cleaning up old revisions..."
+          
+          # Keep only the latest 5 revisions
+          gcloud run revisions list \
+            --service=${{ needs.setup.outputs.service-name }} \
+            --region=${{ env.GCP_REGION }} \
+            --format="value(metadata.name)" \
+            --sort-by="~metadata.creationTimestamp" \
+            --limit=100 | tail -n +6 | while read revision; do
+            if [ ! -z "$revision" ]; then
+              echo "Deleting old revision: $revision"
+              gcloud run revisions delete $revision --region=${{ env.GCP_REGION }} --quiet
+            fi
+          done
+
+      # Post-deployment AI Governance check
+      - name: Post-deployment AI Governance check
+        run: |
+          echo "🤖 Running post-deployment AI Governance checks..."
+          
+          # Test AI governance endpoints
+          curl -f "${{ env.SERVICE_URL }}/api/ai-governance/status/" || echo "⚠️ AI Governance status endpoint not available"
+          curl -f "${{ env.SERVICE_URL }}/api/ai-governance/metrics/" || echo "⚠️ AI Governance metrics endpoint not available"
+          
+          echo "✅ Post-deployment checks completed"
+
+  # Notification
+  notify:
+    runs-on: ubuntu-latest
+    needs: [setup, test, deploy]
+    if: always()
+    steps:
+      - name: Deployment notification
+        run: |
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "✅ Deployment successful!"
+            echo "🌍 Environment: ${{ needs.setup.outputs.environment }}"
+            echo "📦 Service: ${{ needs.setup.outputs.service-name }}"
+            echo "🔗 URL: $(gcloud run services describe ${{ needs.setup.outputs.service-name }} --region=${{ env.GCP_REGION }} --format='value(status.url)' 2>/dev/null || echo 'URL not available')"
+          else
+            echo "❌ Deployment failed!"
+            echo "🌍 Environment: ${{ needs.setup.outputs.environment }}"
+            echo "📦 Service: ${{ needs.setup.outputs.service-name }}"
+            echo "🔍 Check the logs for details"
+          fi
+
+      # Optional: Send Slack notification
+      - name: Slack notification
+        if: always() && secrets.SLACK_WEBHOOK_URL
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ needs.deploy.result }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          custom_payload: |
+            {
+              "text": "${{ needs.deploy.result == 'success' && '✅' || '❌' }} Naibak Microservice Deployment",
+              "attachments": [{
+                "color": "${{ needs.deploy.result == 'success' && 'good' || 'danger' }}",
+                "fields": [{
+                  "title": "Environment",
+                  "value": "${{ needs.setup.outputs.environment }}",
+                  "short": true
+                }, {
+                  "title": "Service",
+                  "value": "${{ needs.setup.outputs.service-name }}",
+                  "short": true
+                }, {
+                  "title": "Status",
+                  "value": "${{ needs.deploy.result }}",
+                  "short": true
+                }]
+              }]
+            }

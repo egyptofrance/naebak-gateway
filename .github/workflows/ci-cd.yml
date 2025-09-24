@@ -1,0 +1,490 @@
+name: Naibak Microservice CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+  REGISTRY: gcr.io
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: naibak-gateway
+  REGION: us-central1
+
+jobs:
+  # Security and Code Quality Checks
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit safety semgrep
+
+      - name: Run Bandit security scan
+        run: |
+          bandit -r app/ -f json -o bandit-report.json || true
+          bandit -r app/ -f txt
+
+      - name: Run Safety check
+        run: |
+          safety check --json --output safety-report.json || true
+          safety check
+
+      - name: Run Semgrep security scan
+        run: |
+          semgrep --config=auto app/ --json --output=semgrep-report.json || true
+          semgrep --config=auto app/
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+            semgrep-report.json
+
+  # Code Quality and Linting
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install black flake8 isort mypy
+
+      - name: Run Black formatter check
+        run: black --check --diff app/
+
+      - name: Run isort import sorting check
+        run: isort --check-only --diff app/
+
+      - name: Run Flake8 linting
+        run: flake8 app/ --max-line-length=88 --extend-ignore=E203,W503
+
+      - name: Run MyPy type checking
+        run: mypy app/ --ignore-missing-imports
+
+  # Unit Tests
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_naibak
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up environment variables
+        run: |
+          echo "SECRET_KEY=test-secret-key-for-ci" >> $GITHUB_ENV
+          echo "DEBUG=True" >> $GITHUB_ENV
+          echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/test_naibak" >> $GITHUB_ENV
+          echo "REDIS_URL=redis://localhost:6379/0" >> $GITHUB_ENV
+          echo "AI_GOVERNANCE_ENABLED=True" >> $GITHUB_ENV
+
+      - name: Run Django migrations
+        run: |
+          python manage.py migrate
+
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ -v --cov=app --cov-report=xml --cov-report=html
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: unit-test-results
+          path: |
+            htmlcov/
+            coverage.xml
+
+  # Integration Tests
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_naibak
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up environment variables
+        run: |
+          echo "SECRET_KEY=test-secret-key-for-ci" >> $GITHUB_ENV
+          echo "DEBUG=True" >> $GITHUB_ENV
+          echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/test_naibak" >> $GITHUB_ENV
+          echo "REDIS_URL=redis://localhost:6379/0" >> $GITHUB_ENV
+          echo "AI_GOVERNANCE_ENABLED=True" >> $GITHUB_ENV
+
+      - name: Run Django migrations
+        run: |
+          python manage.py migrate
+
+      - name: Run integration tests
+        run: |
+          pytest tests/integration/ -v --maxfail=5
+
+      - name: Run governance tests
+        run: |
+          pytest tests/governance/ -v
+
+  # Security Tests
+  security-tests:
+    name: Security Tests
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_naibak
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up environment variables
+        run: |
+          echo "SECRET_KEY=test-secret-key-for-ci" >> $GITHUB_ENV
+          echo "DEBUG=False" >> $GITHUB_ENV
+          echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/test_naibak" >> $GITHUB_ENV
+          echo "REDIS_URL=redis://localhost:6379/0" >> $GITHUB_ENV
+          echo "AI_GOVERNANCE_ENABLED=True" >> $GITHUB_ENV
+
+      - name: Run Django migrations
+        run: |
+          python manage.py migrate
+
+      - name: Run security tests
+        run: |
+          pytest tests/security/ -v
+
+  # Container Security Scan
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.SERVICE_NAME }}:${{ github.sha }} .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.SERVICE_NAME }}:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Build and Push Container
+  build-and-push:
+    name: Build and Push Container
+    runs-on: ubuntu-latest
+    needs: [security-scan, code-quality, unit-tests, integration-tests, security-tests, container-security]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for GCR
+        run: |
+          gcloud auth configure-docker
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+          docker build -t ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest .
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Deploy to Cloud Run (Staging)
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }}-staging \
+            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --set-env-vars="ENVIRONMENT=staging" \
+            --set-env-vars="DEBUG=False" \
+            --set-env-vars="AI_GOVERNANCE_ENABLED=True" \
+            --memory=1Gi \
+            --cpu=1 \
+            --max-instances=10 \
+            --timeout=300
+
+      - name: Run smoke tests on staging
+        run: |
+          STAGING_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }}-staging --region=${{ env.REGION }} --format='value(status.url)')
+          curl -f $STAGING_URL/health || exit 1
+
+  # Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Deploy to Cloud Run (Production)
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --set-env-vars="ENVIRONMENT=production" \
+            --set-env-vars="DEBUG=False" \
+            --set-env-vars="AI_GOVERNANCE_ENABLED=True" \
+            --memory=2Gi \
+            --cpu=2 \
+            --max-instances=100 \
+            --timeout=300 \
+            --no-traffic
+
+      - name: Gradual traffic migration
+        run: |
+          # Deploy with no traffic first, then gradually migrate
+          gcloud run services update-traffic ${{ env.SERVICE_NAME }} \
+            --to-revisions=LATEST=10 \
+            --region=${{ env.REGION }}
+          
+          sleep 60
+          
+          # Check health and migrate more traffic
+          PROD_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --region=${{ env.REGION }} --format='value(status.url)')
+          if curl -f $PROD_URL/health; then
+            gcloud run services update-traffic ${{ env.SERVICE_NAME }} \
+              --to-revisions=LATEST=50 \
+              --region=${{ env.REGION }}
+            
+            sleep 60
+            
+            # Final migration
+            gcloud run services update-traffic ${{ env.SERVICE_NAME }} \
+              --to-revisions=LATEST=100 \
+              --region=${{ env.REGION }}
+          else
+            echo "Health check failed, rolling back"
+            gcloud run services update-traffic ${{ env.SERVICE_NAME }} \
+              --to-revisions=LATEST=0 \
+              --region=${{ env.REGION }}
+            exit 1
+          fi
+
+  # Performance Tests
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/develop'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Get staging URL
+        run: |
+          STAGING_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }}-staging --region=${{ env.REGION }} --format='value(status.url)')
+          echo "STAGING_URL=$STAGING_URL" >> $GITHUB_ENV
+
+      - name: Install k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run performance tests
+        run: |
+          k6 run tests/performance/load_test.js --env BASE_URL=${{ env.STAGING_URL }}
+
+  # Notification
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [deploy-production, deploy-staging]
+    if: always()
+    steps:
+      - name: Notify on success
+        if: ${{ needs.deploy-production.result == 'success' || needs.deploy-staging.result == 'success' }}
+        run: |
+          echo "Deployment successful!"
+          # Add Slack/Discord/Email notification here
+
+      - name: Notify on failure
+        if: ${{ needs.deploy-production.result == 'failure' || needs.deploy-staging.result == 'failure' }}
+        run: |
+          echo "Deployment failed!"
+          # Add failure notification here
