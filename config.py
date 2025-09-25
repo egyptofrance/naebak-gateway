@@ -1,5 +1,6 @@
+
 """
-إعدادات خدمة عداد الزوار
+إعدادات خدمة البوابة - Naebak Gateway Service
 """
 import os
 from dotenv import load_dotenv
@@ -11,36 +12,28 @@ class Config:
     """إعدادات التطبيق"""
     
     # إعدادات الخادم
-    HOST = os.getenv('HOST', '0.0.0.0')
-    PORT = int(os.getenv('PORT', 8008))
-    DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+    HOST = os.getenv("GATEWAY_HOST", "0.0.0.0")
+    PORT = int(os.getenv("GATEWAY_PORT", 8000))
+    DEBUG = os.getenv("DEBUG_MODE", "True").lower() == "true"
     
-    # إعدادات الأمان
-    API_KEY = os.getenv('API_KEY', 'naebak-visitor-counter-api-key-change-me')
-    ADMIN_KEY = os.getenv('ADMIN_KEY', 'naebak-admin-key-change-me')
-    
-    # إعدادات Redis
-    REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-    REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-    REDIS_DB = int(os.getenv('REDIS_DB', 2))
-    REDIS_PASSWORD = os.getenv('REDIS_PASSWORD')
+    # إعدادات الأمان (يمكن توسيعها لاحقًا)
+    SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-gateway-key")
     
     # إعدادات CORS
-    CORS_ORIGINS = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
+    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
     
-    # إعدادات Rate Limiting
-    RATE_LIMIT_STORAGE_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+    # إعدادات Rate Limiting (مثال)
+    RATE_LIMIT_STORAGE_URL = os.getenv("RATE_LIMIT_STORAGE_URL", "memory://")
     
-    # إعدادات Google Cloud
-    GOOGLE_CLOUD_PROJECT = os.getenv('GOOGLE_CLOUD_PROJECT', 'naebak-472518')
+    # عناوين URL للخدمات الخلفية
+    AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://localhost:8001")
+    USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://localhost:8002")
+    PRODUCT_SERVICE_URL = os.getenv("PRODUCT_SERVICE_URL", "http://localhost:8003")
+    ORDER_SERVICE_URL = os.getenv("ORDER_SERVICE_URL", "http://localhost:8004")
+    PAYMENT_SERVICE_URL = os.getenv("PAYMENT_SERVICE_URL", "http://localhost:8005")
+    NOTIFICATION_SERVICE_URL = os.getenv("NOTIFICATION_SERVICE_URL", "http://localhost:8006")
     
-    # إعدادات الخدمات الأخرى
-    AUTH_SERVICE_URL = os.getenv('AUTH_SERVICE_URL', 'http://localhost:8001')
-    ADMIN_SERVICE_URL = os.getenv('ADMIN_SERVICE_URL', 'http://localhost:8002')
-    
-    # إعدادات التخزين المؤقت
-    CACHE_TTL = int(os.getenv('CACHE_TTL', 300))  # 5 دقائق
-    
-    # إعدادات الإحصائيات
-    STATS_RETENTION_DAYS = int(os.getenv('STATS_RETENTION_DAYS', 90))  # 90 يوم
-    VISITOR_SESSION_TIMEOUT = int(os.getenv('VISITOR_SESSION_TIMEOUT', 1800))  # 30 دقيقة
+    # إعدادات التخزين المؤقت (إذا لزم الأمر)
+    CACHE_TYPE = os.getenv("CACHE_TYPE", "simple")
+    CACHE_DEFAULT_TIMEOUT = int(os.getenv("CACHE_DEFAULT_TIMEOUT", 300))
+
