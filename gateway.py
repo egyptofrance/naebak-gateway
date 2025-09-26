@@ -20,7 +20,7 @@ microservices based on URL patterns while handling cross-cutting concerns like a
 logging, and error handling centrally.
 """
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, g
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 import requests
@@ -29,11 +29,15 @@ import os
 from datetime import datetime
 import jwt
 import json
+import time
 
 from config import Config
 from constants import APP_NAME, APP_VERSION
 from utils.load_balancer import LoadBalancer
 from utils.rate_limiter import init_limiter
+from monitoring.metrics import GatewayMetrics
+from monitoring.health_checker import HealthChecker
+from monitoring.structured_logging import setup_structured_logging
 
 # Setup application
 app = Flask(__name__)
@@ -50,11 +54,31 @@ CORS(app, resources={r"/*": {"origins": Config.CORS_ORIGINS}})
 # Setup Rate Limiting
 init_limiter(app)
 
-# Setup Logging
-logging.basicConfig(
-    level=logging.INFO if not Config.DEBUG else logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Setup Structured Logging
+setup_structured_logging(app, APP_NAME, APP_VERSION)
+
+# Setup Metrics
+metrics = GatewayMetrics(app)
+
+# Setup Health Checker
+services_config = {
+    "naebak-auth-service": {"base_url": Config.AUTH_SERVICE_URLS[0] if Config.AUTH_SERVICE_URLS else "http://localhost:8001"},
+    "naebak-admin-service": {"base_url": Config.ADMIN_SERVICE_URLS[0] if Config.ADMIN_SERVICE_URLS else "http://localhost:8002"},
+    "naebak-complaints-service": {"base_url": Config.COMPLAINTS_SERVICE_URLS[0] if Config.COMPLAINTS_SERVICE_URLS else "http://localhost:8003"},
+    "naebak-messaging-service": {"base_url": Config.MESSAGING_SERVICE_URLS[0] if Config.MESSAGING_SERVICE_URLS else "http://localhost:8004"},
+    "naebak-ratings-service": {"base_url": Config.RATINGS_SERVICE_URLS[0] if Config.RATINGS_SERVICE_URLS else "http://localhost:8005"},
+    "naebak-visitor-counter-service": {"base_url": Config.VISITOR_SERVICE_URLS[0] if Config.VISITOR_SERVICE_URLS else "http://localhost:8006"},
+    "naebak-news-service": {"base_url": Config.NEWS_SERVICE_URLS[0] if Config.NEWS_SERVICE_URLS else "http://localhost:8007"},
+    "naebak-notifications-service": {"base_url": Config.NOTIFICATIONS_SERVICE_URLS[0] if Config.NOTIFICATIONS_SERVICE_URLS else "http://localhost:8008"},
+    "naebak-banner-service": {"base_url": Config.BANNER_SERVICE_URLS[0] if Config.BANNER_SERVICE_URLS else "http://localhost:8009"},
+    "naebak-content-service": {"base_url": Config.CONTENT_SERVICE_URLS[0] if Config.CONTENT_SERVICE_URLS else "http://localhost:8010"},
+    "naebak-statistics-service": {"base_url": Config.STATISTICS_SERVICE_URLS[0] if Config.STATISTICS_SERVICE_URLS else "http://localhost:8011"},
+    "naebak-theme-service": {"base_url": Config.THEME_SERVICE_URLS[0] if Config.THEME_SERVICE_URLS else "http://localhost:8012"}
+}
+
+health_checker = HealthChecker(services_config)
+health_checker.start_monitoring(check_interval=30)
+
 logger = logging.getLogger(__name__)
 
 # Service routing map for Naebak platform
@@ -207,22 +231,51 @@ def check_authentication(route_config):
 @app.route("/health", methods=["GET"])
 def health_check():
     """
-    Gateway health check endpoint.
-    
-    This endpoint provides health status information for the gateway service,
-    including service version, timestamp, and the number of configured routes.
-    It's used by load balancers and monitoring systems.
+    Enhanced health check endpoint with detailed service status.
     
     Returns:
-        JSON response with gateway health information.
+        JSON response with gateway and services health status.
     """
-    return jsonify({
-        "status": "healthy",
-        "service": APP_NAME,
-        "version": APP_VERSION,
-        "timestamp": datetime.now().isoformat(),
-        "services_count": len(SERVICE_ROUTES)
-    }), 200
+    try:
+        # Get health summary
+        health_summary = health_checker.get_health_summary()
+        
+        # Get metrics summary
+        metrics_summary = metrics.get_metrics_summary()
+        
+        # Determine overall status
+        overall_status = "healthy" if health_summary['health_percentage'] >= 80 else "degraded"
+        if health_summary['healthy_services'] == 0:
+            overall_status = "unhealthy"
+        
+        return jsonify({
+            "status": overall_status,
+            "service": APP_NAME,
+            "version": APP_VERSION,
+            "timestamp": datetime.now().isoformat(),
+            "uptime_seconds": time.time() - app.config.get('START_TIME', time.time()),
+            "services": {
+                "total": health_summary['total_services'],
+                "healthy": health_summary['healthy_services'],
+                "unhealthy": health_summary['unhealthy_services'],
+                "health_percentage": health_summary['health_percentage']
+            },
+            "metrics": {
+                "active_connections": metrics_summary['active_connections'],
+                "total_requests": metrics_summary['total_requests']
+            },
+            "circuit_breakers": health_checker.get_circuit_breaker_states()
+        }), 200 if overall_status == "healthy" else 503
+        
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return jsonify({
+            "status": "error",
+            "service": APP_NAME,
+            "version": APP_VERSION,
+            "timestamp": datetime.now().isoformat(),
+            "error": "Health check failed"
+        }), 500
 
 @app.route("/api/gateway/services", methods=["GET"])
 def list_services():
@@ -411,6 +464,122 @@ def proxy_request(path):
             "timestamp": datetime.now().isoformat()
         }), 500
 
+# Additional Monitoring Endpoints
+
+@app.route('/health/services', methods=['GET'])
+def services_health():
+    """
+    Detailed health status of all backend services.
+    
+    Returns:
+        JSON response with individual service health details.
+    """
+    try:
+        service_name = request.args.get('service')
+        
+        if service_name:
+            # Get specific service health
+            if service_name in services_config:
+                result = health_checker.check_service_health(service_name)
+                history = health_checker.get_service_history(service_name, limit=10)
+                
+                return jsonify({
+                    "service": service_name,
+                    "current_status": {
+                        "status": result.status.value,
+                        "response_time": result.response_time,
+                        "timestamp": result.timestamp.isoformat(),
+                        "error_message": result.error_message,
+                        "details": result.details
+                    },
+                    "recent_history": history,
+                    "circuit_breaker": health_checker.circuit_breakers[service_name].get_state()
+                })
+            else:
+                return jsonify({"error": "Service not found"}), 404
+        else:
+            # Get all services health
+            all_results = health_checker.check_all_services()
+            
+            services_status = {}
+            for service_name, result in all_results.items():
+                services_status[service_name] = {
+                    "status": result.status.value,
+                    "response_time": result.response_time,
+                    "timestamp": result.timestamp.isoformat(),
+                    "error_message": result.error_message,
+                    "circuit_breaker_state": health_checker.circuit_breakers[service_name].state.value
+                }
+            
+            return jsonify({
+                "services": services_status,
+                "summary": health_checker.get_health_summary(),
+                "timestamp": datetime.now().isoformat()
+            })
+            
+    except Exception as e:
+        logger.error(f"Services health check error: {e}")
+        return jsonify({"error": "Services health check failed"}), 500
+
+@app.route('/metrics', methods=['GET'])
+def metrics_endpoint():
+    """
+    Prometheus metrics endpoint.
+    
+    Returns:
+        Prometheus formatted metrics.
+    """
+    # This endpoint is automatically handled by prometheus-flask-exporter
+    # But we can add custom logic here if needed
+    pass
+
+@app.route('/metrics/summary', methods=['GET'])
+def metrics_summary():
+    """
+    Human-readable metrics summary.
+    
+    Returns:
+        JSON response with key metrics.
+    """
+    try:
+        summary = metrics.get_metrics_summary()
+        health_summary = health_checker.get_health_summary()
+        
+        return jsonify({
+            "gateway_metrics": summary,
+            "health_metrics": health_summary,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Metrics summary error: {e}")
+        return jsonify({"error": "Metrics summary failed"}), 500
+
+@app.route('/admin/circuit-breakers', methods=['GET'])
+def circuit_breakers_status():
+    """
+    Circuit breakers status and control endpoint.
+    
+    Returns:
+        JSON response with circuit breaker states.
+    """
+    try:
+        # Check if user has admin privileges (simplified for now)
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({"error": "Authentication required"}), 401
+        
+        states = health_checker.get_circuit_breaker_states()
+        
+        return jsonify({
+            "circuit_breakers": states,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Circuit breakers status error: {e}")
+        return jsonify({"error": "Circuit breakers status failed"}), 500
+
 @app.errorhandler(404)
 def not_found(error):
     """
@@ -452,13 +621,24 @@ def internal_error(error):
     }), 500
 
 if __name__ == "__main__":
+    # Set start time for uptime calculation
+    app.config['START_TIME'] = time.time()
+    
     # Create database tables
     with app.app_context():
         db.create_all()
     
-    app.run(
-        host=Config.HOST,
-        port=Config.PORT,
-        debug=Config.DEBUG
-    )
+    app.logger.info(f"Starting {APP_NAME} v{APP_VERSION}")
+    app.logger.info(f"Monitoring {len(services_config)} services")
+    
+    try:
+        app.run(
+            host=Config.HOST,
+            port=Config.PORT,
+            debug=Config.DEBUG
+        )
+    finally:
+        # Cleanup on shutdown
+        health_checker.stop_monitoring()
+        app.logger.info("Gateway shutdown complete")
 

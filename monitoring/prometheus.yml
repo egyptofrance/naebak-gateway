@@ -17,19 +17,41 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Naibak Microservice
-  - job_name: 'naibak-gateway'
+  # Naebak Gateway - Main metrics
+  - job_name: 'naebak-gateway'
     static_configs:
-      - targets: ['app:8000']
+      - targets: ['localhost:8013']
     metrics_path: '/metrics'
     scrape_interval: 10s
     scrape_timeout: 5s
 
-  # AI Governance specific metrics
-  - job_name: 'ai-governance'
+  # Naebak Gateway - Health metrics
+  - job_name: 'naebak-gateway-health'
     static_configs:
-      - targets: ['app:8000']
-    metrics_path: '/api/v1/ai-governance/metrics'
+      - targets: ['localhost:8013']
+    metrics_path: '/health'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    
+  # Naebak Gateway - Services health
+  - job_name: 'naebak-services-health'
+    static_configs:
+      - targets: ['localhost:8013']
+    metrics_path: '/health/services'
+    scrape_interval: 60s
+    scrape_timeout: 15s
+
+  # Backend Naebak Services
+  - job_name: 'naebak-auth-service'
+    static_configs:
+      - targets: ['localhost:8001']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+  - job_name: 'naebak-messaging-service'
+    static_configs:
+      - targets: ['localhost:8004']
+    metrics_path: '/metrics'
     scrape_interval: 30s
 
   # System metrics
