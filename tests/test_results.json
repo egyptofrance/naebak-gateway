@@ -1,0 +1,73 @@
+{
+  "service_name": "naebak-gateway",
+  "test_timestamp": "2025-09-26T04:53:39.756268",
+  "tests_run": 9,
+  "tests_passed": 8,
+  "tests_failed": 0,
+  "test_details": [
+    {
+      "test_name": "File Structure",
+      "status": "PASSED",
+      "details": "All required files present: 7/7",
+      "duration_ms": 0.04,
+      "timestamp": "2025-09-26T04:53:39.756550"
+    },
+    {
+      "test_name": "Python Syntax",
+      "status": "PASSED",
+      "details": "All 37 Python files have valid syntax",
+      "duration_ms": 40.88,
+      "timestamp": "2025-09-26T04:53:39.797509"
+    },
+    {
+      "test_name": "Flask Dependencies",
+      "status": "PASSED",
+      "details": "All key dependencies available: 3 modules",
+      "duration_ms": 277.75,
+      "timestamp": "2025-09-26T04:53:40.075474"
+    },
+    {
+      "test_name": "Gateway Configuration",
+      "status": "PASSED",
+      "details": "Configuration elements found: ['Config class defined', 'Secret key configuration', 'Database configuration', 'Host/Port configuration', 'Debug configuration']",
+      "duration_ms": 0.06,
+      "timestamp": "2025-09-26T04:53:40.075706"
+    },
+    {
+      "test_name": "Routing System",
+      "status": "PASSED",
+      "details": "Routing features found: ['Route handling', 'Load balancing', 'Health checking', 'Service discovery']",
+      "duration_ms": 0.18,
+      "timestamp": "2025-09-26T04:53:40.075956"
+    },
+    {
+      "test_name": "Security Middleware",
+      "status": "PASSED",
+      "details": "Security features found: ['JWT authentication', 'CORS handling', 'Rate limiting', 'Authentication middleware', 'Encryption/Hashing']",
+      "duration_ms": 0.3,
+      "timestamp": "2025-09-26T04:53:40.076326"
+    },
+    {
+      "test_name": "Main Gateway App",
+      "status": "PASSED",
+      "details": "Gateway app features: ['Flask app initialization', 'Route definitions', 'CORS configuration', 'Main execution block', 'App run configuration', 'Request forwarding', 'Service integration']",
+      "duration_ms": 0.12,
+      "timestamp": "2025-09-26T04:53:40.076530"
+    },
+    {
+      "test_name": "Startup Script",
+      "status": "PASSED",
+      "details": "Startup features: ['Main execution block', 'Gateway import', 'Environment variable support', 'App execution', 'Host/Port configuration']",
+      "duration_ms": 0.03,
+      "timestamp": "2025-09-26T04:53:40.076632"
+    },
+    {
+      "test_name": "Code Quality",
+      "status": "WARNING",
+      "details": "Quality score: 61.8%. Metrics: {'total_lines': 6633, 'python_files': 28, 'docstrings': 414, 'comments': 369, 'functions': 267, 'classes': 64}",
+      "duration_ms": 4.81,
+      "timestamp": "2025-09-26T04:53:40.081495"
+    }
+  ],
+  "service_status": "READY"
+}

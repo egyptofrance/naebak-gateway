@@ -1,0 +1,24 @@
+2025-09-26 04:53:39,756 - INFO - 🌐 Starting Naebak Gateway Service Tests
+2025-09-26 04:53:39,756 - INFO - ============================================================
+2025-09-26 04:53:39,756 - INFO - ✅ File Structure: All required files present: 7/7
+2025-09-26 04:53:39,797 - INFO - ✅ Python Syntax: All 37 Python files have valid syntax
+2025-09-26 04:53:40,075 - INFO - ✅ Flask Dependencies: All key dependencies available: 3 modules
+2025-09-26 04:53:40,075 - INFO - ✅ Gateway Configuration: Configuration elements found: ['Config class defined', 'Secret key configuration', 'Database configuration', 'Host/Port configuration', 'Debug configuration']
+2025-09-26 04:53:40,075 - INFO - ✅ Routing System: Routing features found: ['Route handling', 'Load balancing', 'Health checking', 'Service discovery']
+2025-09-26 04:53:40,076 - INFO - ✅ Security Middleware: Security features found: ['JWT authentication', 'CORS handling', 'Rate limiting', 'Authentication middleware', 'Encryption/Hashing']
+2025-09-26 04:53:40,076 - INFO - ✅ Main Gateway App: Gateway app features: ['Flask app initialization', 'Route definitions', 'CORS configuration', 'Main execution block', 'App run configuration', 'Request forwarding', 'Service integration']
+2025-09-26 04:53:40,076 - INFO - ✅ Startup Script: Startup features: ['Main execution block', 'Gateway import', 'Environment variable support', 'App execution', 'Host/Port configuration']
+2025-09-26 04:53:40,081 - WARNING - ⚠️  Code Quality: Quality score: 61.8%. Metrics: {'total_lines': 6633, 'python_files': 28, 'docstrings': 414, 'comments': 369, 'functions': 267, 'classes': 64}
+2025-09-26 04:53:40,081 - INFO - ============================================================
+2025-09-26 04:53:40,081 - INFO - 📋 GATEWAY SERVICE TEST SUMMARY
+2025-09-26 04:53:40,081 - INFO - ============================================================
+2025-09-26 04:53:40,081 - INFO - 🌐 Service: naebak-gateway
+2025-09-26 04:53:40,081 - INFO - 📅 Timestamp: 2025-09-26T04:53:39.756268
+2025-09-26 04:53:40,081 - INFO - 📊 Total Tests: 9
+2025-09-26 04:53:40,081 - INFO - ✅ Passed: 8
+2025-09-26 04:53:40,081 - INFO - ❌ Failed: 0
+2025-09-26 04:53:40,081 - INFO - 📈 Success Rate: 88.9%
+2025-09-26 04:53:40,081 - INFO - 🎯 Service Status: READY
+2025-09-26 04:53:40,082 - INFO - 📄 Detailed results saved to /home/ubuntu/naebak-gateway/tests/test_results.json
+2025-09-26 04:53:40,082 - INFO - 📋 Summary report saved to /home/ubuntu/naebak-gateway/tests/test_summary.md
+2025-09-26 04:53:40,082 - INFO - ============================================================
