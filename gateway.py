@@ -1,644 +1,331 @@
-
+#!/usr/bin/env python3
 """
-Naebak Gateway Service - Central API Gateway
+البوابة الرئيسية المبسطة - نائبك
+===============================
 
-This is the main application file for the Naebak Gateway Service, which serves as the central
-entry point for all microservices in the Naebak platform. The gateway handles request routing,
-authentication, rate limiting, and provides a unified API interface for frontend applications.
+بوابة API مبسطة وموثوقة باستخدام Flask.
+تقوم بتوجيه الطلبات للخدمات المختلفة مع التحقق من الهوية.
 
-Key Features:
-- Centralized request routing to microservices
-- JWT-based authentication and authorization
-- Rate limiting and security controls
-- Service discovery and health monitoring
-- CORS handling for web applications
-- Comprehensive error handling and logging
-
-Architecture:
-The gateway implements a reverse proxy pattern, routing incoming requests to appropriate
-microservices based on URL patterns while handling cross-cutting concerns like authentication,
-logging, and error handling centrally.
+الميزات:
+- توجيه الطلبات للخدمات (auth, complaints, messaging, notifications)
+- التحقق من JWT tokens
+- CORS support
+- معالجة الأخطاء
+- إحصائيات بسيطة
+- فحص صحة الخدمات
 """
 
-from flask import Flask, request, jsonify, Response, g
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, verify_jwt_in_request, get_jwt_identity
 import requests
 import logging
 import os
-from datetime import datetime
-import jwt
 import json
-import time
+from datetime import datetime, timedelta
 
-from config import Config
-from constants import APP_NAME, APP_VERSION
-from utils.load_balancer import LoadBalancer
-from utils.rate_limiter import init_limiter
-from monitoring.metrics import GatewayMetrics
-from monitoring.health_checker import HealthChecker
-from monitoring.structured_logging import setup_structured_logging
-
-# Setup application
-app = Flask(__name__)
-app.config.from_object(Config)
-
-# Setup database for shared reference data
-app.config['SQLALCHEMY_DATABASE_URI'] = Config.DATABASE_URL
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-
-# Setup CORS
-CORS(app, resources={r"/*": {"origins": Config.CORS_ORIGINS}})
-
-# Setup Rate Limiting
-init_limiter(app)
-
-# Setup Structured Logging
-setup_structured_logging(app, APP_NAME, APP_VERSION)
-
-# Setup Metrics
-metrics = GatewayMetrics(app)
-
-# Setup Health Checker
-services_config = {
-    "naebak-auth-service": {"base_url": Config.AUTH_SERVICE_URLS[0] if Config.AUTH_SERVICE_URLS else "http://localhost:8001"},
-    "naebak-admin-service": {"base_url": Config.ADMIN_SERVICE_URLS[0] if Config.ADMIN_SERVICE_URLS else "http://localhost:8002"},
-    "naebak-complaints-service": {"base_url": Config.COMPLAINTS_SERVICE_URLS[0] if Config.COMPLAINTS_SERVICE_URLS else "http://localhost:8003"},
-    "naebak-messaging-service": {"base_url": Config.MESSAGING_SERVICE_URLS[0] if Config.MESSAGING_SERVICE_URLS else "http://localhost:8004"},
-    "naebak-ratings-service": {"base_url": Config.RATINGS_SERVICE_URLS[0] if Config.RATINGS_SERVICE_URLS else "http://localhost:8005"},
-    "naebak-visitor-counter-service": {"base_url": Config.VISITOR_SERVICE_URLS[0] if Config.VISITOR_SERVICE_URLS else "http://localhost:8006"},
-    "naebak-news-service": {"base_url": Config.NEWS_SERVICE_URLS[0] if Config.NEWS_SERVICE_URLS else "http://localhost:8007"},
-    "naebak-notifications-service": {"base_url": Config.NOTIFICATIONS_SERVICE_URLS[0] if Config.NOTIFICATIONS_SERVICE_URLS else "http://localhost:8008"},
-    "naebak-banner-service": {"base_url": Config.BANNER_SERVICE_URLS[0] if Config.BANNER_SERVICE_URLS else "http://localhost:8009"},
-    "naebak-content-service": {"base_url": Config.CONTENT_SERVICE_URLS[0] if Config.CONTENT_SERVICE_URLS else "http://localhost:8010"},
-    "naebak-statistics-service": {"base_url": Config.STATISTICS_SERVICE_URLS[0] if Config.STATISTICS_SERVICE_URLS else "http://localhost:8011"},
-    "naebak-theme-service": {"base_url": Config.THEME_SERVICE_URLS[0] if Config.THEME_SERVICE_URLS else "http://localhost:8012"}
-}
-
-health_checker = HealthChecker(services_config)
-health_checker.start_monitoring(check_interval=30)
-
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Service routing map for Naebak platform
-SERVICE_ROUTES = {
-    "/api/auth/": {
-        "service": "naebak-auth-service",
-        "urls": Config.AUTH_SERVICE_URLS,
-        "timeout": 10,
-        "auth_required": False
+# Initialize Flask app
+app = Flask(__name__)
+
+# Configuration
+app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+app.config['CORS_HEADERS'] = 'Content-Type'
+
+# Initialize extensions
+CORS(app)
+jwt = JWTManager(app)
+
+# Service configuration - easy to update
+SERVICES = {
+    'auth': {
+        'url': os.environ.get('AUTH_SERVICE_URL', 'http://localhost:8001'),
+        'timeout': 10,
+        'auth_required': False
     },
-    "/api/admin/": {
-        "service": "naebak-admin-service",
-        "urls": Config.ADMIN_SERVICE_URLS,
-        "timeout": 15,
-        "auth_required": True,
-        "admin_only": True
+    'complaints': {
+        'url': os.environ.get('COMPLAINTS_SERVICE_URL', 'http://localhost:8004'),
+        'timeout': 15,
+        'auth_required': True
     },
-    "/api/complaints/": {
-        "service": "naebak-complaints-service",
-        "urls": Config.COMPLAINTS_SERVICE_URLS,
-        "timeout": 20,
-        "auth_required": True
+    'messaging': {
+        'url': os.environ.get('MESSAGING_SERVICE_URL', 'http://localhost:8002'),
+        'timeout': 10,
+        'auth_required': True
     },
-    "/api/messages/": {
-        "service": "naebak-messaging-service",
-        "urls": Config.MESSAGING_SERVICE_URLS,
-        "timeout": 10,
-        "auth_required": True
-    },
-    "/api/ratings/": {
-        "service": "naebak-ratings-service",
-        "urls": Config.RATINGS_SERVICE_URLS,
-        "timeout": 5,
-        "auth_required": True
-    },
-    "/api/visitors/": {
-        "service": "naebak-visitor-counter-service",
-        "urls": Config.VISITOR_SERVICE_URLS,
-        "timeout": 3,
-        "auth_required": False
-    },
-    "/api/news/": {
-        "service": "naebak-news-service",
-        "urls": Config.NEWS_SERVICE_URLS,
-        "timeout": 5,
-        "auth_required": False
-    },
-    "/api/notifications/": {
-        "service": "naebak-notifications-service",
-        "urls": Config.NOTIFICATIONS_SERVICE_URLS,
-        "timeout": 8,
-        "auth_required": True
-    },
-    "/api/banners/": {
-        "service": "naebak-banner-service",
-        "urls": Config.BANNER_SERVICE_URLS,
-        "timeout": 10,
-        "auth_required": False
-    },
-    "/api/content/": {
-        "service": "naebak-content-service",
-        "urls": Config.CONTENT_SERVICE_URLS,
-        "timeout": 15,
-        "auth_required": False
-    },
-    "/api/statistics/": {
-        "service": "naebak-statistics-service",
-        "urls": Config.STATISTICS_SERVICE_URLS,
-        "timeout": 10,
-        "auth_required": False
-    },
-    "/api/themes/": {
-        "service": "naebak-theme-service",
-        "urls": Config.THEME_SERVICE_URLS,
-        "timeout": 5,
-        "auth_required": True
+    'notifications': {
+        'url': os.environ.get('NOTIFICATIONS_SERVICE_URL', 'http://localhost:8003'),
+        'timeout': 10,
+        'auth_required': True
     }
 }
 
-# Initialize load balancers for each service
-for config in SERVICE_ROUTES.values():
-    config['load_balancer'] = LoadBalancer(config['urls'])
+# Route mapping - simple and clear
+ROUTE_MAP = {
+    '/api/auth/': 'auth',
+    '/api/complaints/': 'complaints',
+    '/api/messaging/': 'messaging',
+    '/api/notifications/': 'notifications'
+}
 
-def verify_jwt_token(token):
-    """
-    Verify the validity of a JWT token.
-    
-    This function validates JWT tokens used for authentication across the platform.
-    It checks token signature, expiration, and extracts user information for
-    authorization decisions.
-    
-    Args:
-        token (str): The JWT token to verify.
-        
-    Returns:
-        dict or None: Token payload if valid, None if invalid or expired.
-        
-    Security Notes:
-        - Uses platform-wide secret key for token verification
-        - Handles both expired and malformed tokens gracefully
-        - Returns user information for downstream authorization
-    """
-    try:
-        payload = jwt.decode(token, Config.JWT_SECRET_KEY, algorithms=['HS256'])
-        return payload
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
+# Statistics tracking
+stats = {
+    'total_requests': 0,
+    'successful_requests': 0,
+    'failed_requests': 0,
+    'service_requests': {service: 0 for service in SERVICES.keys()},
+    'start_time': datetime.utcnow()
+}
 
-def check_authentication(route_config):
-    """
-    Check authentication requirements for protected routes.
-    
-    This function implements the gateway's authentication and authorization logic,
-    verifying JWT tokens and checking role-based permissions for protected endpoints.
-    
-    Args:
-        route_config (dict): Route configuration including auth requirements.
-        
-    Returns:
-        tuple: (is_valid, result) where is_valid is boolean and result is either
-               error message (if invalid) or user payload (if valid).
-               
-    Authorization Levels:
-        - Public routes: No authentication required
-        - Protected routes: Valid JWT token required
-        - Admin routes: Valid JWT token with admin role required
-    """
-    if not route_config.get('auth_required', False):
-        return True, None
-    
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return False, "Missing or invalid authorization header"
-    
-    token = auth_header.split(' ')[1]
-    payload = verify_jwt_token(token)
-    
-    if not payload:
-        return False, "Invalid or expired token"
-    
-    # Check admin privileges if required
-    if route_config.get('admin_only', False):
-        if not payload.get('is_admin', False):
-            return False, "Admin privileges required"
-    
-    return True, payload
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    """
-    Enhanced health check endpoint with detailed service status.
-    
-    Returns:
-        JSON response with gateway and services health status.
-    """
-    try:
-        # Get health summary
-        health_summary = health_checker.get_health_summary()
-        
-        # Get metrics summary
-        metrics_summary = metrics.get_metrics_summary()
-        
-        # Determine overall status
-        overall_status = "healthy" if health_summary['health_percentage'] >= 80 else "degraded"
-        if health_summary['healthy_services'] == 0:
-            overall_status = "unhealthy"
-        
-        return jsonify({
-            "status": overall_status,
-            "service": APP_NAME,
-            "version": APP_VERSION,
-            "timestamp": datetime.now().isoformat(),
-            "uptime_seconds": time.time() - app.config.get('START_TIME', time.time()),
-            "services": {
-                "total": health_summary['total_services'],
-                "healthy": health_summary['healthy_services'],
-                "unhealthy": health_summary['unhealthy_services'],
-                "health_percentage": health_summary['health_percentage']
-            },
-            "metrics": {
-                "active_connections": metrics_summary['active_connections'],
-                "total_requests": metrics_summary['total_requests']
-            },
-            "circuit_breakers": health_checker.get_circuit_breaker_states()
-        }), 200 if overall_status == "healthy" else 503
-        
-    except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return jsonify({
-            "status": "error",
-            "service": APP_NAME,
-            "version": APP_VERSION,
-            "timestamp": datetime.now().isoformat(),
-            "error": "Health check failed"
-        }), 500
-
-@app.route("/api/gateway/services", methods=["GET"])
-def list_services():
-    """
-    List all available services and their configurations.
-    
-    This endpoint provides service discovery information, listing all microservices
-    accessible through the gateway along with their authentication requirements.
-    It's useful for frontend applications and API documentation.
-    
-    Returns:
-        JSON response with service list including:
-        - Route patterns for each service
-        - Authentication requirements
-        - Admin-only restrictions
-        - Total service count
-    """
-    services = []
-    for route, config in SERVICE_ROUTES.items():
-        services.append({
-            "route": route,
-            "service": config["service"],
-            "auth_required": config.get("auth_required", False),
-            "admin_only": config.get("admin_only", False)
-        })
-    
-    return jsonify({
-        "success": True,
-        "data": {
-            "services": services,
-            "total_count": len(services)
-        },
-        "timestamp": datetime.now().isoformat()
-    }), 200
-
-def find_matching_route(path):
-    """
-    Find the matching service route for a given request path.
-    
-    This function implements the routing logic that determines which microservice
-    should handle a given request based on URL patterns defined in SERVICE_ROUTES.
-    
-    Args:
-        path (str): The request path to match against service routes.
-        
-    Returns:
-        tuple: (route_pattern, route_config) if match found, (None, None) otherwise.
-        
-    Routing Logic:
-        - Uses prefix matching for flexible route handling
-        - Returns the first matching route (order matters)
-        - Supports nested paths within service routes
-    """
-    for route_pattern, config in SERVICE_ROUTES.items():
-        if path.startswith(route_pattern.rstrip('/')):
-            return route_pattern, config
+def get_service_for_path(path):
+    """تحديد الخدمة المناسبة للمسار"""
+    for route_prefix, service_name in ROUTE_MAP.items():
+        if path.startswith(route_prefix):
+            return service_name, route_prefix
     return None, None
 
-@app.route("/api/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-def proxy_request(path):
-    """
-    General proxy endpoint for routing requests to appropriate microservices.
+def check_auth_if_required(service_name):
+    """التحقق من المصادقة إذا كانت مطلوبة"""
+    service_config = SERVICES.get(service_name)
+    if not service_config:
+        return False, "خدمة غير موجودة"
     
-    This is the core gateway functionality that handles request routing, authentication,
-    and proxying to backend microservices. It implements a reverse proxy pattern with
-    comprehensive error handling and security controls.
+    if service_config.get('auth_required', False):
+        try:
+            verify_jwt_in_request()
+            return True, None
+        except Exception as e:
+            return False, "مطلوب تسجيل الدخول"
     
-    Args:
-        path (str): The API path to be routed to the appropriate microservice.
-        
-    Returns:
-        Response: Proxied response from the target microservice or error response.
-        
-    Request Flow:
-        1. Parse incoming request path
-        2. Find matching service route
-        3. Verify authentication if required
-        4. Build target URL and headers
-        5. Proxy request to microservice
-        6. Return response with proper error handling
-        
-    Security Features:
-        - JWT token validation for protected routes
-        - Role-based access control for admin endpoints
-        - Request timeout protection
-        - Header sanitization and user context injection
-    """
-    full_path = f"/api/{path}"
-    logger.debug(f"Incoming request for path: {full_path}")
+    return True, None
+
+def forward_request(service_name, target_path, route_prefix):
+    """توجيه الطلب للخدمة المناسبة"""
+    service_config = SERVICES[service_name]
+    service_url = service_config['url']
+    timeout = service_config['timeout']
     
-    # Find matching service
-    route_pattern, route_config = find_matching_route(full_path)
+    # إنشاء URL الهدف
+    # إزالة البادئة من المسار
+    clean_path = target_path[len(route_prefix)-1:]  # نحتفظ بـ /
+    if not clean_path.startswith('/'):
+        clean_path = '/' + clean_path
     
-    if not route_config:
-        return jsonify({
-            "success": False,
-            "error": {
-                "code": "SERVICE_NOT_FOUND",
-                "message": f"No service found for path: {full_path}"
-            },
-            "timestamp": datetime.now().isoformat()
-        }), 404
+    target_url = f"{service_url}{clean_path}"
     
-    # Check authentication
-    auth_valid, auth_result = check_authentication(route_config)
-    if not auth_valid:
-        return jsonify({
-            "success": False,
-            "error": {
-                "code": "AUTHENTICATION_FAILED",
-                "message": auth_result
-            },
-            "timestamp": datetime.now().isoformat()
-        }), 401
+    # إعداد headers
+    headers = {}
+    if request.headers.get('Authorization'):
+        headers['Authorization'] = request.headers.get('Authorization')
+    if request.headers.get('Content-Type'):
+        headers['Content-Type'] = request.headers.get('Content-Type')
     
-    # Build target URL
-    service_path = full_path[len(route_pattern.rstrip('/')):]
-    if not service_path.startswith('/'):
-        service_path = '/' + service_path
+    # إعداد البيانات
+    data = None
+    if request.method in ['POST', 'PUT', 'PATCH']:
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.get_data()
     
-    base_url = route_config['load_balancer'].get_next_service_url()
-    target_url = f"{base_url}{service_path}"
-    
-    logger.info(f"Proxying request to {route_config['service']}: {request.method} {target_url}")
+    # إعداد query parameters
+    params = request.args.to_dict()
     
     try:
-        # Setup headers
-        headers = dict(request.headers)
-        if "Host" in headers:
-            del headers["Host"]
+        # إرسال الطلب
+        if request.method == 'GET':
+            response = requests.get(target_url, headers=headers, params=params, timeout=timeout)
+        elif request.method == 'POST':
+            if request.is_json:
+                response = requests.post(target_url, json=data, headers=headers, params=params, timeout=timeout)
+            else:
+                response = requests.post(target_url, data=data, headers=headers, params=params, timeout=timeout)
+        elif request.method == 'PUT':
+            if request.is_json:
+                response = requests.put(target_url, json=data, headers=headers, params=params, timeout=timeout)
+            else:
+                response = requests.put(target_url, data=data, headers=headers, params=params, timeout=timeout)
+        elif request.method == 'DELETE':
+            response = requests.delete(target_url, headers=headers, params=params, timeout=timeout)
+        elif request.method == 'PATCH':
+            if request.is_json:
+                response = requests.patch(target_url, json=data, headers=headers, params=params, timeout=timeout)
+            else:
+                response = requests.patch(target_url, data=data, headers=headers, params=params, timeout=timeout)
+        else:
+            return jsonify({'error': 'طريقة HTTP غير مدعومة'}), 405
         
-        # Add user information if authenticated
-        if auth_result and isinstance(auth_result, dict):
-            headers['X-User-ID'] = str(auth_result.get('user_id', ''))
-            headers['X-User-Role'] = auth_result.get('role', 'user')
-        
-        # Proxy the request
-        resp = requests.request(
-            method=request.method,
-            url=target_url,
-            headers=headers,
-            data=request.get_data(),
-            cookies=request.cookies,
-            allow_redirects=False,
-            timeout=route_config.get('timeout', Config.DEFAULT_TIMEOUT)
+        # إرجاع الاستجابة
+        return Response(
+            response.content,
+            status=response.status_code,
+            headers=dict(response.headers)
         )
         
-        # Build response
-        response = Response(resp.content, status=resp.status_code)
-        for key, value in resp.headers.items():
-            if key.lower() not in ["content-encoding", "content-length", "transfer-encoding", "connection"]:
-                response.headers[key] = value
-        
-        return response
-        
     except requests.exceptions.Timeout:
-        logger.error(f"Timeout connecting to {route_config['service']} at {target_url}")
-        return jsonify({
-            "success": False,
-            "error": {
-                "code": "SERVICE_TIMEOUT",
-                "message": f"Service {route_config['service']} unavailable (timeout)"
-            },
-            "timestamp": datetime.now().isoformat()
-        }), 504
-        
+        logger.error(f"انتهت مهلة الاتصال بالخدمة {service_name}")
+        return jsonify({'error': 'انتهت مهلة الاتصال بالخدمة'}), 504
+    
     except requests.exceptions.ConnectionError:
-        logger.error(f"Connection error to {route_config['service']} at {target_url}")
-        return jsonify({
-            "success": False,
-            "error": {
-                "code": "SERVICE_UNAVAILABLE",
-                "message": f"Service {route_config['service']} unavailable (connection error)"
-            },
-            "timestamp": datetime.now().isoformat()
-        }), 503
-        
-    except Exception as e:
-        logger.error(f"Error proxying request to {route_config['service']}: {str(e)}")
-        return jsonify({
-            "success": False,
-            "error": {
-                "code": "GATEWAY_ERROR",
-                "message": "Internal gateway error"
-            },
-            "timestamp": datetime.now().isoformat()
-        }), 500
-
-# Additional Monitoring Endpoints
-
-@app.route('/health/services', methods=['GET'])
-def services_health():
-    """
-    Detailed health status of all backend services.
+        logger.error(f"فشل الاتصال بالخدمة {service_name}")
+        return jsonify({'error': 'الخدمة غير متاحة حالياً'}), 503
     
-    Returns:
-        JSON response with individual service health details.
-    """
-    try:
-        service_name = request.args.get('service')
-        
-        if service_name:
-            # Get specific service health
-            if service_name in services_config:
-                result = health_checker.check_service_health(service_name)
-                history = health_checker.get_service_history(service_name, limit=10)
-                
-                return jsonify({
-                    "service": service_name,
-                    "current_status": {
-                        "status": result.status.value,
-                        "response_time": result.response_time,
-                        "timestamp": result.timestamp.isoformat(),
-                        "error_message": result.error_message,
-                        "details": result.details
-                    },
-                    "recent_history": history,
-                    "circuit_breaker": health_checker.circuit_breakers[service_name].get_state()
-                })
-            else:
-                return jsonify({"error": "Service not found"}), 404
-        else:
-            # Get all services health
-            all_results = health_checker.check_all_services()
-            
-            services_status = {}
-            for service_name, result in all_results.items():
-                services_status[service_name] = {
-                    "status": result.status.value,
-                    "response_time": result.response_time,
-                    "timestamp": result.timestamp.isoformat(),
-                    "error_message": result.error_message,
-                    "circuit_breaker_state": health_checker.circuit_breakers[service_name].state.value
+    except Exception as e:
+        logger.error(f"خطأ في توجيه الطلب للخدمة {service_name}: {str(e)}")
+        return jsonify({'error': 'خطأ داخلي في الخادم'}), 500
+
+@app.before_request
+def before_request():
+    """معالجة ما قبل الطلب"""
+    stats['total_requests'] += 1
+    
+    # تسجيل الطلب
+    logger.info(f"{request.method} {request.path} من {request.remote_addr}")
+
+@app.after_request
+def after_request(response):
+    """معالجة ما بعد الطلب"""
+    if response.status_code < 400:
+        stats['successful_requests'] += 1
+    else:
+        stats['failed_requests'] += 1
+    
+    return response
+
+@app.route('/', methods=['GET'])
+def root():
+    """الصفحة الرئيسية"""
+    return jsonify({
+        'service': 'naebak-gateway',
+        'version': '2.0.0',
+        'status': 'running',
+        'message': 'البوابة الرئيسية لتطبيق نائبك',
+        'timestamp': datetime.utcnow().isoformat(),
+        'available_services': list(SERVICES.keys())
+    }), 200
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """فحص صحة البوابة والخدمات"""
+    gateway_health = {
+        'status': 'healthy',
+        'service': 'naebak-gateway',
+        'version': '2.0.0',
+        'timestamp': datetime.utcnow().isoformat(),
+        'uptime_seconds': (datetime.utcnow() - stats['start_time']).total_seconds()
+    }
+    
+    # فحص الخدمات
+    services_health = {}
+    for service_name, config in SERVICES.items():
+        try:
+            response = requests.get(f"{config['url']}/health", timeout=5)
+            if response.status_code == 200:
+                services_health[service_name] = {
+                    'status': 'healthy',
+                    'response_time_ms': response.elapsed.total_seconds() * 1000
                 }
-            
-            return jsonify({
-                "services": services_status,
-                "summary": health_checker.get_health_summary(),
-                "timestamp": datetime.now().isoformat()
-            })
-            
-    except Exception as e:
-        logger.error(f"Services health check error: {e}")
-        return jsonify({"error": "Services health check failed"}), 500
-
-@app.route('/metrics', methods=['GET'])
-def metrics_endpoint():
-    """
-    Prometheus metrics endpoint.
+            else:
+                services_health[service_name] = {
+                    'status': 'unhealthy',
+                    'error': f'HTTP {response.status_code}'
+                }
+        except Exception as e:
+            services_health[service_name] = {
+                'status': 'unreachable',
+                'error': str(e)
+            }
     
-    Returns:
-        Prometheus formatted metrics.
-    """
-    # This endpoint is automatically handled by prometheus-flask-exporter
-    # But we can add custom logic here if needed
-    pass
+    return jsonify({
+        'gateway': gateway_health,
+        'services': services_health
+    }), 200
 
-@app.route('/metrics/summary', methods=['GET'])
-def metrics_summary():
-    """
-    Human-readable metrics summary.
+@app.route('/stats', methods=['GET'])
+def get_stats():
+    """إحصائيات البوابة"""
+    uptime = datetime.utcnow() - stats['start_time']
     
-    Returns:
-        JSON response with key metrics.
-    """
-    try:
-        summary = metrics.get_metrics_summary()
-        health_summary = health_checker.get_health_summary()
-        
-        return jsonify({
-            "gateway_metrics": summary,
-            "health_metrics": health_summary,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        logger.error(f"Metrics summary error: {e}")
-        return jsonify({"error": "Metrics summary failed"}), 500
+    return jsonify({
+        'total_requests': stats['total_requests'],
+        'successful_requests': stats['successful_requests'],
+        'failed_requests': stats['failed_requests'],
+        'success_rate': (stats['successful_requests'] / max(stats['total_requests'], 1)) * 100,
+        'service_requests': stats['service_requests'],
+        'uptime_seconds': uptime.total_seconds(),
+        'uptime_human': str(uptime),
+        'start_time': stats['start_time'].isoformat(),
+        'current_time': datetime.utcnow().isoformat()
+    }), 200
 
-@app.route('/admin/circuit-breakers', methods=['GET'])
-def circuit_breakers_status():
-    """
-    Circuit breakers status and control endpoint.
+@app.route('/api/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+def api_proxy(path):
+    """توجيه طلبات API للخدمات المناسبة"""
+    full_path = f"/api/{path}"
     
-    Returns:
-        JSON response with circuit breaker states.
-    """
-    try:
-        # Check if user has admin privileges (simplified for now)
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify({"error": "Authentication required"}), 401
-        
-        states = health_checker.get_circuit_breaker_states()
-        
-        return jsonify({
-            "circuit_breakers": states,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        logger.error(f"Circuit breakers status error: {e}")
-        return jsonify({"error": "Circuit breakers status failed"}), 500
+    # تحديد الخدمة المناسبة
+    service_name, route_prefix = get_service_for_path(full_path)
+    
+    if not service_name:
+        return jsonify({'error': 'مسار API غير موجود'}), 404
+    
+    # التحقق من المصادقة إذا كانت مطلوبة
+    auth_valid, auth_error = check_auth_if_required(service_name)
+    if not auth_valid:
+        return jsonify({'error': auth_error}), 401
+    
+    # تحديث إحصائيات الخدمة
+    stats['service_requests'][service_name] += 1
+    
+    # توجيه الطلب
+    return forward_request(service_name, full_path, route_prefix)
 
+# Error handlers
 @app.errorhandler(404)
 def not_found(error):
-    """
-    Handle 404 Not Found errors with consistent JSON response format.
-    
-    Args:
-        error: Flask error object.
-        
-    Returns:
-        JSON response with standardized error format.
-    """
-    return jsonify({
-        "success": False,
-        "error": {
-            "code": "NOT_FOUND",
-            "message": error.description or "Not Found"
-        },
-        "timestamp": datetime.now().isoformat()
-    }), 404
+    return jsonify({'error': 'الصفحة غير موجودة'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
-    """
-    Handle 500 Internal Server errors with consistent JSON response format.
-    
-    Args:
-        error: Flask error object.
-        
-    Returns:
-        JSON response with standardized error format.
-    """
-    return jsonify({
-        "success": False,
-        "error": {
-            "code": "INTERNAL_ERROR",
-            "message": "Internal Server Error"
-        },
-        "timestamp": datetime.now().isoformat()
-    }), 500
+    return jsonify({'error': 'خطأ داخلي في الخادم'}), 500
 
-if __name__ == "__main__":
-    # Set start time for uptime calculation
-    app.config['START_TIME'] = time.time()
-    
-    # Create database tables
-    with app.app_context():
-        db.create_all()
-    
-    app.logger.info(f"Starting {APP_NAME} v{APP_VERSION}")
-    app.logger.info(f"Monitoring {len(services_config)} services")
-    
-    try:
-        app.run(
-            host=Config.HOST,
-            port=Config.PORT,
-            debug=Config.DEBUG
-        )
-    finally:
-        # Cleanup on shutdown
-        health_checker.stop_monitoring()
-        app.logger.info("Gateway shutdown complete")
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({'error': 'طلب غير صحيح'}), 400
 
+@app.errorhandler(401)
+def unauthorized(error):
+    return jsonify({'error': 'غير مصرح لك بالوصول'}), 401
+
+@app.errorhandler(403)
+def forbidden(error):
+    return jsonify({'error': 'ممنوع الوصول'}), 403
+
+@app.errorhandler(503)
+def service_unavailable(error):
+    return jsonify({'error': 'الخدمة غير متاحة'}), 503
+
+@app.errorhandler(504)
+def gateway_timeout(error):
+    return jsonify({'error': 'انتهت مهلة الاتصال'}), 504
+
+if __name__ == '__main__':
+    logger.info("=" * 50)
+    logger.info("🚀 بدء تشغيل البوابة الرئيسية المبسطة v2.0")
+    logger.info("=" * 50)
+    logger.info("✅ توجيه الطلبات: 4 خدمات رئيسية")
+    logger.info("✅ المصادقة: JWT tokens")
+    logger.info("✅ CORS: مدعوم")
+    logger.info("✅ الإحصائيات: متاحة على /stats")
+    logger.info("✅ فحص الصحة: متاح على /health")
+    logger.info("=" * 50)
+    logger.info("📋 الخدمات المتاحة:")
+    for service_name, config in SERVICES.items():
+        logger.info(f"   - {service_name}: {config['url']}")
+    logger.info("=" * 50)
+    
+    app.run(host='0.0.0.0', port=8000, debug=True)
