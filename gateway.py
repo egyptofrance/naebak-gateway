@@ -1,3 +1,4 @@
+
 """
 Naebak Gateway Service - Central API Gateway
 
@@ -21,8 +22,6 @@ logging, and error handling centrally.
 
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 from flask_sqlalchemy import SQLAlchemy
 import requests
 import logging
@@ -33,6 +32,8 @@ import json
 
 from config import Config
 from constants import APP_NAME, APP_VERSION
+from utils.load_balancer import LoadBalancer
+from utils.rate_limiter import init_limiter
 
 # Setup application
 app = Flask(__name__)
@@ -47,11 +48,7 @@ db = SQLAlchemy(app)
 CORS(app, resources={r"/*": {"origins": Config.CORS_ORIGINS}})
 
 # Setup Rate Limiting
-limiter = Limiter(
-    app,
-    key_func=get_remote_address,
-    default_limits=[Config.RATE_LIMIT_DEFAULT]
-)
+init_limiter(app)
 
 # Setup Logging
 logging.basicConfig(
@@ -64,78 +61,82 @@ logger = logging.getLogger(__name__)
 SERVICE_ROUTES = {
     "/api/auth/": {
         "service": "naebak-auth-service",
-        "url": Config.AUTH_SERVICE_URL,
+        "urls": Config.AUTH_SERVICE_URLS,
         "timeout": 10,
         "auth_required": False
     },
     "/api/admin/": {
         "service": "naebak-admin-service",
-        "url": Config.ADMIN_SERVICE_URL,
+        "urls": Config.ADMIN_SERVICE_URLS,
         "timeout": 15,
         "auth_required": True,
         "admin_only": True
     },
     "/api/complaints/": {
         "service": "naebak-complaints-service",
-        "url": Config.COMPLAINTS_SERVICE_URL,
+        "urls": Config.COMPLAINTS_SERVICE_URLS,
         "timeout": 20,
         "auth_required": True
     },
     "/api/messages/": {
         "service": "naebak-messaging-service",
-        "url": Config.MESSAGING_SERVICE_URL,
+        "urls": Config.MESSAGING_SERVICE_URLS,
         "timeout": 10,
         "auth_required": True
     },
     "/api/ratings/": {
         "service": "naebak-ratings-service",
-        "url": Config.RATINGS_SERVICE_URL,
+        "urls": Config.RATINGS_SERVICE_URLS,
         "timeout": 5,
         "auth_required": True
     },
     "/api/visitors/": {
         "service": "naebak-visitor-counter-service",
-        "url": Config.VISITOR_SERVICE_URL,
+        "urls": Config.VISITOR_SERVICE_URLS,
         "timeout": 3,
         "auth_required": False
     },
     "/api/news/": {
         "service": "naebak-news-service",
-        "url": Config.NEWS_SERVICE_URL,
+        "urls": Config.NEWS_SERVICE_URLS,
         "timeout": 5,
         "auth_required": False
     },
     "/api/notifications/": {
         "service": "naebak-notifications-service",
-        "url": Config.NOTIFICATIONS_SERVICE_URL,
+        "urls": Config.NOTIFICATIONS_SERVICE_URLS,
         "timeout": 8,
         "auth_required": True
     },
     "/api/banners/": {
         "service": "naebak-banner-service",
-        "url": Config.BANNER_SERVICE_URL,
+        "urls": Config.BANNER_SERVICE_URLS,
         "timeout": 10,
         "auth_required": False
     },
     "/api/content/": {
         "service": "naebak-content-service",
-        "url": Config.CONTENT_SERVICE_URL,
+        "urls": Config.CONTENT_SERVICE_URLS,
         "timeout": 15,
         "auth_required": False
     },
     "/api/statistics/": {
         "service": "naebak-statistics-service",
-        "url": Config.STATISTICS_SERVICE_URL,
+        "urls": Config.STATISTICS_SERVICE_URLS,
         "timeout": 10,
         "auth_required": False
     },
     "/api/themes/": {
         "service": "naebak-theme-service",
-        "url": Config.THEME_SERVICE_URL,
+        "urls": Config.THEME_SERVICE_URLS,
         "timeout": 5,
         "auth_required": True
     }
 }
+
+# Initialize load balancers for each service
+for config in SERVICE_ROUTES.values():
+    config['load_balancer'] = LoadBalancer(config['urls'])
 
 def verify_jwt_token(token):
     """
@@ -342,7 +343,8 @@ def proxy_request(path):
     if not service_path.startswith('/'):
         service_path = '/' + service_path
     
-    target_url = f"{route_config['url']}{service_path}"
+    base_url = route_config['load_balancer'].get_next_service_url()
+    target_url = f"{base_url}{service_path}"
     
     logger.info(f"Proxying request to {route_config['service']}: {request.method} {target_url}")
     
@@ -459,3 +461,4 @@ if __name__ == "__main__":
         port=Config.PORT,
         debug=Config.DEBUG
     )
+
