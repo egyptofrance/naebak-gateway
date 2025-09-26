@@ -1,7 +1,24 @@
 """
-خدمة البوابة - Naebak Gateway Service
-نقطة الدخول المركزية لجميع الخدمات المصغرة في منصة نائبك
+Naebak Gateway Service - Central API Gateway
+
+This is the main application file for the Naebak Gateway Service, which serves as the central
+entry point for all microservices in the Naebak platform. The gateway handles request routing,
+authentication, rate limiting, and provides a unified API interface for frontend applications.
+
+Key Features:
+- Centralized request routing to microservices
+- JWT-based authentication and authorization
+- Rate limiting and security controls
+- Service discovery and health monitoring
+- CORS handling for web applications
+- Comprehensive error handling and logging
+
+Architecture:
+The gateway implements a reverse proxy pattern, routing incoming requests to appropriate
+microservices based on URL patterns while handling cross-cutting concerns like authentication,
+logging, and error handling centrally.
 """
+
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -17,33 +34,33 @@ import json
 from config import Config
 from constants import APP_NAME, APP_VERSION
 
-# إعداد التطبيق
+# Setup application
 app = Flask(__name__)
 app.config.from_object(Config)
 
-# إعداد قاعدة البيانات للبيانات المرجعية المشتركة
+# Setup database for shared reference data
 app.config['SQLALCHEMY_DATABASE_URI'] = Config.DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# إعداد CORS
+# Setup CORS
 CORS(app, resources={r"/*": {"origins": Config.CORS_ORIGINS}})
 
-# إعداد Rate Limiting
+# Setup Rate Limiting
 limiter = Limiter(
     app,
     key_func=get_remote_address,
     default_limits=[Config.RATE_LIMIT_DEFAULT]
 )
 
-# إعداد Logging
+# Setup Logging
 logging.basicConfig(
     level=logging.INFO if not Config.DEBUG else logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# خريطة توجيه الخدمات - منصة نائبك
+# Service routing map for Naebak platform
 SERVICE_ROUTES = {
     "/api/auth/": {
         "service": "naebak-auth-service",
@@ -121,7 +138,24 @@ SERVICE_ROUTES = {
 }
 
 def verify_jwt_token(token):
-    """التحقق من صحة JWT Token"""
+    """
+    Verify the validity of a JWT token.
+    
+    This function validates JWT tokens used for authentication across the platform.
+    It checks token signature, expiration, and extracts user information for
+    authorization decisions.
+    
+    Args:
+        token (str): The JWT token to verify.
+        
+    Returns:
+        dict or None: Token payload if valid, None if invalid or expired.
+        
+    Security Notes:
+        - Uses platform-wide secret key for token verification
+        - Handles both expired and malformed tokens gracefully
+        - Returns user information for downstream authorization
+    """
     try:
         payload = jwt.decode(token, Config.JWT_SECRET_KEY, algorithms=['HS256'])
         return payload
@@ -131,7 +165,24 @@ def verify_jwt_token(token):
         return None
 
 def check_authentication(route_config):
-    """فحص المصادقة للمسارات التي تتطلب ذلك"""
+    """
+    Check authentication requirements for protected routes.
+    
+    This function implements the gateway's authentication and authorization logic,
+    verifying JWT tokens and checking role-based permissions for protected endpoints.
+    
+    Args:
+        route_config (dict): Route configuration including auth requirements.
+        
+    Returns:
+        tuple: (is_valid, result) where is_valid is boolean and result is either
+               error message (if invalid) or user payload (if valid).
+               
+    Authorization Levels:
+        - Public routes: No authentication required
+        - Protected routes: Valid JWT token required
+        - Admin routes: Valid JWT token with admin role required
+    """
     if not route_config.get('auth_required', False):
         return True, None
     
@@ -145,7 +196,7 @@ def check_authentication(route_config):
     if not payload:
         return False, "Invalid or expired token"
     
-    # فحص الصلاحيات الإدارية إذا لزم الأمر
+    # Check admin privileges if required
     if route_config.get('admin_only', False):
         if not payload.get('is_admin', False):
             return False, "Admin privileges required"
@@ -154,7 +205,16 @@ def check_authentication(route_config):
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """فحص صحة خدمة البوابة"""
+    """
+    Gateway health check endpoint.
+    
+    This endpoint provides health status information for the gateway service,
+    including service version, timestamp, and the number of configured routes.
+    It's used by load balancers and monitoring systems.
+    
+    Returns:
+        JSON response with gateway health information.
+    """
     return jsonify({
         "status": "healthy",
         "service": APP_NAME,
@@ -165,7 +225,20 @@ def health_check():
 
 @app.route("/api/gateway/services", methods=["GET"])
 def list_services():
-    """قائمة بجميع الخدمات المتاحة"""
+    """
+    List all available services and their configurations.
+    
+    This endpoint provides service discovery information, listing all microservices
+    accessible through the gateway along with their authentication requirements.
+    It's useful for frontend applications and API documentation.
+    
+    Returns:
+        JSON response with service list including:
+        - Route patterns for each service
+        - Authentication requirements
+        - Admin-only restrictions
+        - Total service count
+    """
     services = []
     for route, config in SERVICE_ROUTES.items():
         services.append({
@@ -185,7 +258,23 @@ def list_services():
     }), 200
 
 def find_matching_route(path):
-    """العثور على المسار المطابق للخدمة"""
+    """
+    Find the matching service route for a given request path.
+    
+    This function implements the routing logic that determines which microservice
+    should handle a given request based on URL patterns defined in SERVICE_ROUTES.
+    
+    Args:
+        path (str): The request path to match against service routes.
+        
+    Returns:
+        tuple: (route_pattern, route_config) if match found, (None, None) otherwise.
+        
+    Routing Logic:
+        - Uses prefix matching for flexible route handling
+        - Returns the first matching route (order matters)
+        - Supports nested paths within service routes
+    """
     for route_pattern, config in SERVICE_ROUTES.items():
         if path.startswith(route_pattern.rstrip('/')):
             return route_pattern, config
@@ -193,11 +282,37 @@ def find_matching_route(path):
 
 @app.route("/api/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 def proxy_request(path):
-    """وكيل عام لإعادة توجيه الطلبات إلى الخدمات المناسبة"""
+    """
+    General proxy endpoint for routing requests to appropriate microservices.
+    
+    This is the core gateway functionality that handles request routing, authentication,
+    and proxying to backend microservices. It implements a reverse proxy pattern with
+    comprehensive error handling and security controls.
+    
+    Args:
+        path (str): The API path to be routed to the appropriate microservice.
+        
+    Returns:
+        Response: Proxied response from the target microservice or error response.
+        
+    Request Flow:
+        1. Parse incoming request path
+        2. Find matching service route
+        3. Verify authentication if required
+        4. Build target URL and headers
+        5. Proxy request to microservice
+        6. Return response with proper error handling
+        
+    Security Features:
+        - JWT token validation for protected routes
+        - Role-based access control for admin endpoints
+        - Request timeout protection
+        - Header sanitization and user context injection
+    """
     full_path = f"/api/{path}"
     logger.debug(f"Incoming request for path: {full_path}")
     
-    # العثور على الخدمة المطابقة
+    # Find matching service
     route_pattern, route_config = find_matching_route(full_path)
     
     if not route_config:
@@ -210,7 +325,7 @@ def proxy_request(path):
             "timestamp": datetime.now().isoformat()
         }), 404
     
-    # فحص المصادقة
+    # Check authentication
     auth_valid, auth_result = check_authentication(route_config)
     if not auth_valid:
         return jsonify({
@@ -222,7 +337,7 @@ def proxy_request(path):
             "timestamp": datetime.now().isoformat()
         }), 401
     
-    # بناء URL الهدف
+    # Build target URL
     service_path = full_path[len(route_pattern.rstrip('/')):]
     if not service_path.startswith('/'):
         service_path = '/' + service_path
@@ -232,17 +347,17 @@ def proxy_request(path):
     logger.info(f"Proxying request to {route_config['service']}: {request.method} {target_url}")
     
     try:
-        # إعداد Headers
+        # Setup headers
         headers = dict(request.headers)
         if "Host" in headers:
             del headers["Host"]
         
-        # إضافة معلومات المستخدم إذا كان مصادق
+        # Add user information if authenticated
         if auth_result and isinstance(auth_result, dict):
             headers['X-User-ID'] = str(auth_result.get('user_id', ''))
             headers['X-User-Role'] = auth_result.get('role', 'user')
         
-        # إعادة توجيه الطلب
+        # Proxy the request
         resp = requests.request(
             method=request.method,
             url=target_url,
@@ -253,7 +368,7 @@ def proxy_request(path):
             timeout=route_config.get('timeout', Config.DEFAULT_TIMEOUT)
         )
         
-        # بناء الاستجابة
+        # Build response
         response = Response(resp.content, status=resp.status_code)
         for key, value in resp.headers.items():
             if key.lower() not in ["content-encoding", "content-length", "transfer-encoding", "connection"]:
@@ -296,6 +411,15 @@ def proxy_request(path):
 
 @app.errorhandler(404)
 def not_found(error):
+    """
+    Handle 404 Not Found errors with consistent JSON response format.
+    
+    Args:
+        error: Flask error object.
+        
+    Returns:
+        JSON response with standardized error format.
+    """
     return jsonify({
         "success": False,
         "error": {
@@ -307,6 +431,15 @@ def not_found(error):
 
 @app.errorhandler(500)
 def internal_error(error):
+    """
+    Handle 500 Internal Server errors with consistent JSON response format.
+    
+    Args:
+        error: Flask error object.
+        
+    Returns:
+        JSON response with standardized error format.
+    """
     return jsonify({
         "success": False,
         "error": {
@@ -317,7 +450,7 @@ def internal_error(error):
     }), 500
 
 if __name__ == "__main__":
-    # إنشاء جداول قاعدة البيانات
+    # Create database tables
     with app.app_context():
         db.create_all()
     
